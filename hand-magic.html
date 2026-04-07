@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hand Magic</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; font-family:system-ui,sans-serif; }
+
+#splash {
+  position:fixed; inset:0; background:#000; z-index:100;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  transition:opacity 0.8s;
+}
+#splash h1 { color:#fff; font-size:2rem; font-weight:300; letter-spacing:0.2em; margin-bottom:0.75rem; }
+#splash p  { color:#666; font-size:0.85rem; letter-spacing:0.12em; margin-bottom:2rem; }
+.loader {
+  width:44px; height:44px; border:2px solid #333;
+  border-top-color:#a78bfa; border-radius:50%;
+  animation:spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform:rotate(360deg); } }
+
+#video {
+  position:fixed; inset:0; width:100%; height:100%;
+  object-fit:cover; transform:scaleX(-1);
+  opacity:0; transition:opacity 0.5s;
+}
+#canvas { position:fixed; inset:0; width:100%; height:100%; pointer-events:none; }
+
+#ui {
+  position:fixed; top:0; left:0; right:0; z-index:10;
+  display:flex; align-items:center; gap:10px; padding:10px 16px;
+  background:rgba(0,0,0,0.6); backdrop-filter:blur(6px);
+}
+#status { flex:1; font-size:0.75rem; letter-spacing:0.08em; color:#aaa; }
+.tbtn {
+  border:none; cursor:pointer; font-size:0.68rem; font-weight:700;
+  letter-spacing:0.06em; padding:4px 11px; border-radius:16px;
+  opacity:0.45; transition:opacity 0.2s, transform 0.15s;
+}
+.tbtn.active { opacity:1; transform:scale(1.1); }
+#bp { background:#7c3aed; color:#fff; }
+#bg { background:#d97706; color:#fff; }
+#bc { background:#0891b2; color:#fff; }
+#br { background:linear-gradient(90deg,#f43f5e,#f97316,#eab308,#22c55e,#3b82f6,#a855f7); color:#fff; }
+
+#hint {
+  position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+  color:rgba(255,255,255,0.3); font-size:0.78rem; letter-spacing:0.12em;
+  pointer-events:none; transition:opacity 1s;
+}
+</style>
+</head>
+<body>
+
+<div id="splash">
+  <h1>&#10022; HAND MAGIC &#10022;</h1>
+  <p id="splashMsg">INITIALISING...</p>
+  <div class="loader"></div>
+</div>
+
+<video id="video" playsinline muted autoplay></video>
+<canvas id="canvas"></canvas>
+
+<div id="ui">
+  <span id="status">&#9679; LOADING</span>
+  <button class="tbtn active" id="bp" onclick="setTheme('purple')">PURPLE</button>
+  <button class="tbtn"        id="bg" onclick="setTheme('gold')">GOLD</button>
+  <button class="tbtn"        id="bc" onclick="setTheme('cyan')">CYAN</button>
+  <button class="tbtn"        id="br" onclick="setTheme('rainbow')">RAINBOW</button>
+</div>
+<div id="hint">SHOW YOUR HANDS TO THE CAMERA</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
+<script>
+const video  = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const hintEl   = document.getElementById('hint');
+const splashEl = document.getElementById('splash');
+const splashMsg = document.getElementById('splashMsg');
+
+let W = 0, H = 0;
+function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
+window.addEventListener('resize', resize);
+resize();
+
+// hand skeleton connections
+const CONNS = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [0,9],[9,10],[10,11],[11,12],
+  [0,13],[13,14],[14,15],[15,16],
+  [0,17],[17,18],[18,19],[19,20],
+  [5,9],[9,13],[13,17]
+];
+const TIPS = [4,8,12,16,20];
+const FINGER_HUES = [0,30,120,210,270];
+const LM2F = [0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4];
+
+let theme = 'purple';
+const TC = {
+  purple: { mid:'#c084fc', glow:'rgba(124,58,237,', xc:'rgba(192,132,252,' },
+  gold:   { mid:'#fbbf24', glow:'rgba(217,119,6,',  xc:'rgba(251,191,36,'  },
+  cyan:   { mid:'#22d3ee', glow:'rgba(8,145,178,',  xc:'rgba(34,211,238,'  },
+  rainbow:{ mid:null,      glow:null,                xc:null               },
+};
+
+function setTheme(t) {
+  theme = t;
+  document.querySelectorAll('.tbtn').forEach(b => b.classList.remove('active'));
+  const ids = { purple:'bp', gold:'bg', cyan:'bc', rainbow:'br' };
+  document.getElementById(ids[t]).classList.add('active');
+}
+
+function lmHue(hi, lmIdx) { return FINGER_HUES[LM2F[lmIdx]] + hi * 180; }
+function getMid(hi, lmIdx) {
+  if (theme !== 'rainbow') return TC[theme].mid;
+  return 'hsl(' + lmHue(hi,lmIdx) + ',100%,65%)';
+}
+function getGlow(hi, lmIdx, a) {
+  if (theme !== 'rainbow') return TC[theme].glow + a + ')';
+  return 'hsla(' + lmHue(hi,lmIdx) + ',100%,50%,' + a + ')';
+}
+function getCross(hi, a) {
+  if (theme !== 'rainbow') return TC[theme].xc + a + ')';
+  return 'hsla(' + (hi === 0 ? 0 : 180) + ',100%,60%,' + a + ')';
+}
+
+// canvas coords (mirrored)
+function cx(lm) { return (1 - lm.x) * W; }
+function cy(lm) { return lm.y * H; }
+
+// particles
+const particles = [];
+const prevTips = [{}, {}];
+
+function addParticle(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    if (particles.length > 450) particles.shift();
+    const a = Math.random() * Math.PI * 2;
+    const s = 0.5 + Math.random() * 2.5;
+    particles.push({ x, y, vx: Math.cos(a)*s, vy: Math.sin(a)*s - 0.7,
+      life:1, decay:0.022+Math.random()*0.03, r:1.2+Math.random()*2, color });
+  }
+}
+
+function tickParticles() {
+  for (let i = particles.length-1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vy += 0.04; p.vx *= 0.97; p.vy *= 0.97;
+    p.life -= p.decay;
+    if (p.life <= 0) { particles.splice(i,1); continue; }
+    ctx.globalAlpha = p.life * 0.85;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawThread(x1, y1, x2, y2, hi, lmA) {
+  // perpendicular unit vector for strand offset
+  const dx = x2-x1, dy = y2-y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const px = -dy/len, py = dx/len;
+  const offs = [-1,0,1];
+
+  // layer 1: wide outer glow
+  ctx.strokeStyle = getGlow(hi, lmA, 0.18);
+  ctx.lineWidth = 14;
+  ctx.beginPath();
+  for (const o of offs) { ctx.moveTo(x1+px*o, y1+py*o); ctx.lineTo(x2+px*o, y2+py*o); }
+  ctx.stroke();
+
+  // layer 2: mid glow
+  ctx.strokeStyle = getGlow(hi, lmA, 0.4);
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  for (const o of offs) { ctx.moveTo(x1+px*o, y1+py*o); ctx.lineTo(x2+px*o, y2+py*o); }
+  ctx.stroke();
+
+  // layer 3: colour core
+  ctx.strokeStyle = getMid(hi, lmA);
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  for (const o of offs) { ctx.moveTo(x1+px*o, y1+py*o); ctx.lineTo(x2+px*o, y2+py*o); }
+  ctx.stroke();
+
+  // layer 4: white hot centre
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+  ctx.stroke();
+}
+
+function drawSparkle(x, y, hi, lmIdx) {
+  const col = getMid(hi, lmIdx);
+  const g = ctx.createRadialGradient(x,y,0,x,y,20);
+  g.addColorStop(0, '#ffffff');
+  g.addColorStop(0.25, col);
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, 20, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(x, y, 2.8, 0, Math.PI*2);
+  ctx.fill();
+}
+
+function drawCrossHands(lms0, lms1) {
+  // pre-bake canvas coords
+  const a0 = lms0.map(l => [cx(l), cy(l)]);
+  const a1 = lms1.map(l => [cx(l), cy(l)]);
+
+  // find closest approach for proximity alpha
+  let minD = Infinity;
+  for (const p of a0) for (const q of a1) {
+    const d = Math.hypot(p[0]-q[0], p[1]-q[1]);
+    if (d < minD) minD = d;
+  }
+  const baseAlpha = Math.max(0.03, Math.min(0.85, 1 - minD / (W * 0.55)));
+
+  // 4 batched passes — one beginPath per pass for ALL 441 lines
+  const passes = [
+    { w:20, a: baseAlpha*0.08,  col: getCross(0, baseAlpha*0.08)  },
+    { w:9,  a: baseAlpha*0.20,  col: getCross(0, baseAlpha*0.20)  },
+    { w:3.5,a: baseAlpha*0.55,  col: getCross(0, baseAlpha*0.55)  },
+    { w:1.0,a: baseAlpha*0.88,  col: '#ffffff'                    },
+  ];
+
+  for (const pass of passes) {
+    ctx.strokeStyle = pass.col;
+    ctx.lineWidth   = pass.w;
+    ctx.globalAlpha = 1;
+    ctx.lineCap     = 'round';
+    const KEY = [0,4,8,12,16,20,5,9,13,17];
+    ctx.beginPath();
+    for (const i of KEY) {
+      const [x0,y0] = a0[i];
+      for (const j of KEY) {
+        ctx.moveTo(x0,y0);
+        ctx.lineTo(a1[j][0],a1[j][1]);
+      }
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function render(hands) {
+  ctx.clearRect(0, 0, W, H);
+  ctx.lineCap = 'round';
+
+  for (let hi = 0; hi < hands.length; hi++) {
+    const lms = hands[hi];
+    ctx.globalAlpha = 1;
+
+    // skeleton
+    for (const [a,b] of CONNS) {
+      drawThread(cx(lms[a]), cy(lms[a]), cx(lms[b]), cy(lms[b]), hi, a);
+    }
+    ctx.globalAlpha = 1;
+
+    // fingertips
+    for (const ti of TIPS) {
+      const x = cx(lms[ti]), y = cy(lms[ti]);
+      drawSparkle(x, y, hi, ti);
+      const prev = prevTips[hi][ti];
+      if (prev) {
+        const spd = Math.hypot(x-prev.x, y-prev.y);
+        if (spd > 2) addParticle(x, y, getMid(hi,ti), Math.min(7, Math.ceil(spd*0.6)));
+      }
+      prevTips[hi][ti] = {x, y};
+    }
+  }
+
+  if (hands.length === 2) drawCrossHands(hands[0], hands[1]);
+
+  tickParticles();
+}
+
+// MediaPipe init
+async function init() {
+  splashMsg.textContent = 'REQUESTING CAMERA...';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width:1280, height:720, facingMode:'user' }, audio:false
+    });
+    video.srcObject = stream;
+    await new Promise(r => { video.onloadedmetadata = r; });
+    video.play();
+  } catch(e) {
+    splashMsg.textContent = 'CAMERA ERROR: ' + e.message;
+    return;
+  }
+
+  splashMsg.textContent = 'LOADING MEDIAPIPE...';
+
+  const hands = new Hands({
+    locateFile: f => 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/' + f
+  });
+  hands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.65,
+    minTrackingConfidence: 0.55
+  });
+
+  let processing = false;
+  hands.onResults(results => {
+    processing = false;
+    const detected = results.multiHandLandmarks || [];
+    statusEl.textContent = ['● NO HANDS DETECTED','● 1 HAND DETECTED','● 2 HANDS DETECTED'][detected.length] || '● NO HANDS';
+    hintEl.style.opacity = detected.length === 0 ? '1' : '0';
+    render(detected);
+  });
+
+  // show app
+  splashEl.style.opacity = '0';
+  setTimeout(() => { splashEl.style.display = 'none'; }, 900);
+  video.style.opacity = '1';
+  statusEl.textContent = '● NO HANDS DETECTED';
+
+  // frame pump
+  function pump() {
+    requestAnimationFrame(pump);
+    if (!processing && video.readyState >= 2) {
+      processing = true;
+      hands.send({ image: video }).catch(() => { processing = false; });
+    }
+  }
+  pump();
+}
+
+init();
+</script>
+</body>
+</html>
